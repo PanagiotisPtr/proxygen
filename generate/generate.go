@@ -2,14 +2,14 @@ package generate
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/token"
+	"go/types"
 	"html/template"
-	"log"
 	"os"
+	"reflect"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -33,157 +33,22 @@ const mode packages.LoadMode = packages.NeedName |
 	packages.NeedTypesInfo
 
 func LoadPackage() {
-
 	packagePath := "github.com/panagiotisptr/service-proxies-demo/service"
 	interfaceName := "SomeService"
 
 	fmt.Println(packagePath)
 	fmt.Println(interfaceName)
 
-	pattern := "./..."
-
 	var fset = token.NewFileSet()
 	cfg := &packages.Config{Fset: fset, Mode: mode, Dir: "."}
-	pkgs, err := packages.Load(cfg, pattern)
+
+	data, err := getInterfaceData(fset, cfg, packagePath, interfaceName)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("err: ", err)
+		os.Exit(1)
 	}
 
-	for _, pkg := range pkgs {
-		if pkg.PkgPath == packagePath {
-			fmt.Println("found package")
-			fmt.Println(pkg.PkgPath)
-
-			loadInterface(fset, pkg, interfaceName)
-		}
-	}
-}
-
-func loadInterface(fset *token.FileSet, p *packages.Package, interfaceName string) {
-	var iface *ast.InterfaceType
-	var f *ast.File
-	data := InterfaceData{
-		InterfacePackage: p.Name,
-		InterfaceName:    interfaceName,
-	}
-
-	for _, fileAst := range p.Syntax {
-		f = fileAst
-		ast.Inspect(fileAst, func(n ast.Node) bool {
-			switch t := n.(type) {
-			case *ast.TypeSpec:
-				if !t.Name.IsExported() {
-					return false
-				}
-				if t.Name.Name != interfaceName {
-					return false
-				}
-				fmt.Println("typeSpec: ", t.Name.Name)
-				switch ti := t.Type.(type) {
-				case *ast.InterfaceType:
-					iface = ti
-					return false
-					/*
-						// print arguments for each method
-						for _, m := range ti.Methods.List {
-							if m.Names != nil {
-								for _, name := range m.Names {
-									fmt.Println("method: ", name.Name)
-								}
-							}
-							if m.Type != nil {
-								switch t := m.Type.(type) {
-								case *ast.FuncType:
-									if t.Params != nil {
-										for _, param := range t.Params.List {
-											// print param as a string in the same format as it was parsed
-											fmt.Println("param: ", param.Type)
-											fmt.Println("param type refl: ", reflect.TypeOf(param.Type))
-										}
-									}
-
-									if t.Results != nil {
-										for _, result := range t.Results.List {
-											fmt.Println("result: ", result.Type)
-											fmt.Println("result type refl: ", reflect.TypeOf(result.Type))
-										}
-									}
-								}
-							}
-						}
-					*/
-				default:
-					return false
-				}
-			}
-
-			return true
-		})
-
-		filename := fset.Position(f.Package).Filename
-		fmt.Println("filepath: ", filename)
-		content, _ := os.ReadFile(filename)
-		start := fset.Position(iface.Pos())
-		end := fset.Position(iface.End())
-		fmt.Println("interface: ", string(content[start.Offset:end.Offset]))
-
-		// print imports from the file
-		for _, i := range f.Imports {
-			start = fset.Position(i.Pos())
-			end = fset.Position(i.End())
-			data.Imports = append(data.Imports, string(content[start.Offset:end.Offset]))
-		}
-
-		fmt.Println("imports: ", data.Imports)
-
-		for _, m := range iface.Methods.List {
-			start = fset.Position(m.Pos())
-			end = fset.Position(m.End())
-			fmt.Println("method: ", string(content[start.Offset:end.Offset]))
-
-			if m.Names == nil {
-				continue
-			}
-
-			methodData := MethodData{
-				Name: m.Names[0].Name,
-			}
-			fmt.Println("methodData: ", methodData)
-
-			if m.Type != nil {
-				switch t := m.Type.(type) {
-				case *ast.FuncType:
-					if t.Params != nil {
-						for _, param := range t.Params.List {
-							start = fset.Position(param.Type.Pos())
-							end = fset.Position(param.Type.End())
-							methodData.Params = append(
-								methodData.Params,
-								string(content[start.Offset:end.Offset]),
-							)
-						}
-					}
-
-					if t.Results != nil {
-						for _, result := range t.Results.List {
-							start = fset.Position(result.Pos())
-							end = fset.Position(result.End())
-							methodData.Rets = append(
-								methodData.Rets,
-								string(content[start.Offset:end.Offset]),
-							)
-						}
-					}
-				}
-			}
-
-			data.Methods = append(data.Methods, methodData)
-		}
-
-		b, _ := json.MarshalIndent(data, "", "  ")
-		fmt.Println("data: ", string(b))
-	}
-
+	return
 	//render template
 	tmpl := template.Must(template.New("proxy").Parse(t))
 	var buf bytes.Buffer
@@ -207,8 +72,148 @@ func loadInterface(fset *token.FileSet, p *packages.Package, interfaceName strin
 	fmt.Println("err: ", e)
 }
 
-func abc() (string, string, string) {
-	return "a", "b", "c"
+func getInterfaceData(
+	fset *token.FileSet,
+	cfg *packages.Config,
+	interfacePackage string,
+	interfaceName string,
+) (InterfaceData, error) {
+	data := InterfaceData{
+		InterfacePackage: interfacePackage,
+		InterfaceName:    interfaceName,
+	}
+	pkgs, err := packages.Load(cfg, interfacePackage)
+	if err != nil {
+		return data, err
+	}
+
+	uses := make(map[string]types.Object)
+	var pkg *packages.Package
+	for _, p := range pkgs {
+		if p.PkgPath == interfacePackage {
+			pkg = p
+			// print all types in package
+			for _, t := range p.TypesInfo.Uses {
+				if t == nil {
+					continue
+				}
+				if !t.Exported() {
+					continue
+				}
+				if _, ok := uses[t.Name()]; ok {
+					continue
+				}
+				fmt.Println("USES:", t.Name(), "from package:", t.Pkg().Path())
+				uses[t.Name()] = t
+			}
+		}
+	}
+	var iface *ast.InterfaceType
+	var f *ast.File
+
+	for _, fileAst := range pkg.Syntax {
+		f = fileAst
+		ast.Inspect(fileAst, func(n ast.Node) bool {
+			switch t := n.(type) {
+			case *ast.TypeSpec:
+				if !t.Name.IsExported() {
+					return false
+				}
+				if t.Name.Name != interfaceName {
+					return false
+				}
+				fmt.Println("typeSpec: ", t.Name.Name)
+				switch ti := t.Type.(type) {
+				case *ast.InterfaceType:
+					iface = ti
+					return false
+				default:
+					return false
+				}
+			}
+
+			return true
+		})
+
+		filename := fset.Position(f.Package).Filename
+		fmt.Println("filepath: ", filename)
+		content, _ := os.ReadFile(filename)
+		start := fset.Position(iface.Pos())
+		end := fset.Position(iface.End())
+		fmt.Println("interface: ", string(content[start.Offset:end.Offset]))
+
+		for _, m := range iface.Methods.List {
+			start = fset.Position(m.Pos())
+			end = fset.Position(m.End())
+			fmt.Println("method: ", string(content[start.Offset:end.Offset]))
+
+			if m.Names == nil {
+				continue
+			}
+
+			methodData := MethodData{
+				Name: m.Names[0].Name,
+			}
+			fmt.Println("methodData: ", methodData)
+
+			var realType func(t ast.Expr) *ast.Ident
+			realType = func(t ast.Expr) *ast.Ident {
+				switch t := t.(type) {
+				case *ast.Ident:
+					return t
+				case *ast.StarExpr:
+					return realType(t.X)
+				case *ast.SelectorExpr:
+					return realType(t.Sel)
+				case *ast.ArrayType:
+					return realType(t.Elt)
+				case *ast.MapType:
+					return realType(t.Value)
+				case *ast.ChanType:
+					return realType(t.Value)
+				default:
+					return nil
+				}
+			}
+
+			if m.Type != nil {
+				switch t := m.Type.(type) {
+				case *ast.FuncType:
+					if t.Params != nil {
+						for _, param := range t.Params.List {
+							start = fset.Position(param.Type.Pos())
+							end = fset.Position(param.Type.End())
+							methodData.Params = append(
+								methodData.Params,
+								string(content[start.Offset:end.Offset]),
+							)
+							rt := realType(param.Type)
+							fmt.Println("param: ", param.Names, "- ", reflect.TypeOf(param.Type), string(content[start.Offset:end.Offset]), " - realtype: ", rt)
+							if rt.IsExported() {
+								fmt.Println("exported: ", rt.Name)
+							}
+						}
+					}
+
+					if t.Results != nil {
+						for _, result := range t.Results.List {
+							start = fset.Position(result.Pos())
+							end = fset.Position(result.End())
+							methodData.Rets = append(
+								methodData.Rets,
+								string(content[start.Offset:end.Offset]),
+							)
+							fmt.Println("result: ", result.Names, "- ", reflect.TypeOf(result.Type), string(content[start.Offset:end.Offset]), " - realtype: ", realType(result.Type))
+						}
+					}
+				}
+			}
+
+			data.Methods = append(data.Methods, methodData)
+		}
+	}
+
+	return data, nil
 }
 
 const t = `// Code generated by proxygen. DO NOT EDIT.
@@ -218,7 +223,7 @@ import (
     proxygenInterceptors "github.com/panagiotisptr/proxygen/interceptor"
 
     {{range $idx, $import := .Imports}}
-    {{ $import }}
+    {{ import{{$idx}} $import }}
     {{- end }}
 )
 
@@ -298,80 +303,3 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
     {{- end}}
 }
 {{- end}}`
-
-const t2 = `// Code generated by proxygen. DO NOT EDIT.
-package {{ .PackageName }}
-
-import (
-	"context"
-
-    "github.com/panagiotisptr/proxygen/interceptor"
-
-{{- range $import := .Imports }}
-    {{ $import }}
-{{- end }}
-)
-
-type {{ .Name }} struct {
-	Implementation {{ .InterfacePackage }}.{{ .InterfaceName }}
-	Interceptor    interceptor.Interceptor
-}
-
-{{ range $method := .Methods }}
-func (this *{{ $.Name }}) {{ $method.Name }}(
-{{- if gt (len $method.Params) 0 -}}
-{{- range $idx, $param := $method.Params }}
-   arg{{ $idx }} {{ $param }},
-{{end}}
-{{- end -}}
-) (
-{{- range $ret := $method.Rets }}
-   {{ $ret }},
-{{- end}}
-) {
-	rets := this.Interceptor(
-		[]interface{}{
-        {{- if gt (len $method.Params) 0 -}}
-        {{ range $idx, $param := $method.Params }}
-           arg{{ $idx }},
-        {{end}}
-        {{- end -}}
-        },
-		"{{ $method.Name }}",
-		func(args []interface{}) []interface{} {
-            {{if gt (len $method.Rets) 0 -}}
-            {{range $idx, $ret := $method.Rets}}
-                    {{- if ne $idx 0 }}, {{ end -}}
-                    res{{ $idx }}
-            {{- end -}} := this.Implementation.Create(
-                {{- if gt (len $method.Params) 0 -}}
-                {{ range $idx, $param := $method.Params }}
-                   arg[{{ $idx }}].({{$param}}),
-                {{end}}
-                {{- end -}}
-			)
-            {{- else -}}
-            this.Implementation.Create(
-                {{- if gt (len $method.Params) 0 -}}
-                {{ range $idx, $param := $method.Params }}
-                   arg[{{ $idx }}].({{$param}}),
-                {{end}}
-                {{- end -}}
-			)
-            {{- end}}
-
-			return []interface{}{
-            {{range $idx, $ret := $method.Rets -}}
-                    arg{{ $idx }},
-            {{- end}}
-            }
-		},
-	)
-
-    return {{range $idx, $ret := $method.Rets}}
-                    {{- if ne $idx 0 }}, {{ end -}}
-                    rets[{{ $idx }}].({{ $ret }})
-            {{- end}}
-}
-
-{{end}}`
