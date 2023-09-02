@@ -7,12 +7,27 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
-	"html/template"
 	"os"
 	"reflect"
+	"strings"
+	"text/template"
 
 	"golang.org/x/tools/go/packages"
 )
+
+type ImportData struct {
+	Path  string
+	Name  string
+	Alias string
+}
+
+func (id ImportData) Selector() string {
+	if id.Alias != "" {
+		return id.Alias
+	}
+
+	return id.Name
+}
 
 type MethodData struct {
 	Name   string
@@ -21,20 +36,28 @@ type MethodData struct {
 }
 
 type InterfaceData struct {
-	InterfacePackage string
-	InterfaceName    string
-	Imports          []string
-	Methods          []MethodData
+	InterfacePackage   string
+	InterfaceName      string
+	Imports            []ImportData
+	Methods            []MethodData
+	ImplementationType string
 }
 
 const mode packages.LoadMode = packages.NeedName |
 	packages.NeedTypes |
 	packages.NeedSyntax |
-	packages.NeedTypesInfo
+	packages.NeedTypesInfo |
+	packages.NeedImports
 
-func LoadPackage() {
-	packagePath := "github.com/panagiotisptr/service-proxies-demo/service"
-	interfaceName := "SomeService"
+func LoadPackage(
+	interfacePath string,
+	packageName string,
+	name string,
+	output string,
+) {
+	sections := strings.Split(interfacePath, ".")
+	packagePath := strings.Join(sections[:len(sections)-1], ".")
+	interfaceName := sections[len(sections)-1]
 
 	fmt.Println(packagePath)
 	fmt.Println(interfaceName)
@@ -42,13 +65,12 @@ func LoadPackage() {
 	var fset = token.NewFileSet()
 	cfg := &packages.Config{Fset: fset, Mode: mode, Dir: "."}
 
-	data, err := getInterfaceData(fset, cfg, packagePath, interfaceName)
+	data, err := getInterfaceData(fset, cfg, packagePath, interfaceName, []ImportData{})
 	if err != nil {
 		fmt.Println("err: ", err)
 		os.Exit(1)
 	}
 
-	return
 	//render template
 	tmpl := template.Must(template.New("proxy").Parse(t))
 	var buf bytes.Buffer
@@ -57,8 +79,8 @@ func LoadPackage() {
 		Name        string
 		InterfaceData
 	}{
-		PackageName:   "test",
-		Name:          "test",
+		PackageName:   packageName,
+		Name:          name,
 		InterfaceData: data,
 	})
 
@@ -70,6 +92,20 @@ func LoadPackage() {
 	bs, e := format.Source(generatedProxy.Bytes())
 	fmt.Println("formatted: ", string(bs))
 	fmt.Println("err: ", e)
+
+	// write file
+	f, err := os.Create(output)
+	if err != nil {
+		fmt.Println("error writing file: ", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	_, err = f.Write(bs)
+	if err != nil {
+		fmt.Println("error writing file: ", err)
+		os.Exit(1)
+	}
+
 }
 
 func getInterfaceData(
@@ -77,44 +113,84 @@ func getInterfaceData(
 	cfg *packages.Config,
 	interfacePackage string,
 	interfaceName string,
+	imports []ImportData,
 ) (InterfaceData, error) {
 	data := InterfaceData{
 		InterfacePackage: interfacePackage,
 		InterfaceName:    interfaceName,
+		Imports:          imports,
 	}
 	pkgs, err := packages.Load(cfg, interfacePackage)
 	if err != nil {
 		return data, err
 	}
 
-	uses := make(map[string]types.Object)
+	defs := make(map[string]types.Object)
+	existingImports := []ImportData{}
+	newImports := []ImportData{}
+	fmt.Println("hello")
 	var pkg *packages.Package
 	for _, p := range pkgs {
 		if p.PkgPath == interfacePackage {
 			pkg = p
+			newImports = append(newImports, ImportData{
+				Path: interfacePackage,
+				Name: p.Name,
+			})
+			for _, imp := range p.Imports {
+				existingImports = append(existingImports, ImportData{
+					Path: imp.PkgPath,
+					Name: imp.Name,
+				})
+				newImports = append(newImports, ImportData{
+					Path: imp.PkgPath,
+					Name: imp.Name,
+				})
+			}
 			// print all types in package
-			for _, t := range p.TypesInfo.Uses {
+			for _, t := range p.TypesInfo.Defs {
 				if t == nil {
+					continue
+				}
+				if _, ok := t.(*types.TypeName); !ok {
 					continue
 				}
 				if !t.Exported() {
 					continue
 				}
-				if _, ok := uses[t.Name()]; ok {
+				if _, ok := defs[t.Name()]; ok {
 					continue
 				}
-				fmt.Println("USES:", t.Name(), "from package:", t.Pkg().Path())
-				uses[t.Name()] = t
+				fmt.Println("DEFS:", t.Name(), "from package:", t.Pkg().Path(), "type:", reflect.TypeOf(t))
+				defs[t.Name()] = t
 			}
 		}
 	}
+	for i := range newImports {
+		newImports[i].Alias = fmt.Sprintf("import%d", i)
+	}
+
 	var iface *ast.InterfaceType
+	var ifaceIdent *ast.Ident
 	var f *ast.File
 
 	for _, fileAst := range pkg.Syntax {
 		f = fileAst
 		ast.Inspect(fileAst, func(n ast.Node) bool {
 			switch t := n.(type) {
+			case *ast.ImportSpec:
+				// check if it's import
+				path := strings.ReplaceAll(t.Path.Value, "\"", "")
+				fmt.Println("import: ", path, "as", t.Name)
+				if t.Name != nil {
+					for i, imp := range existingImports {
+						p := strings.ReplaceAll(t.Path.Value, "\"", "")
+						if imp.Path == p {
+							existingImports[i].Alias = t.Name.Name
+						}
+					}
+				}
+				return false
 			case *ast.TypeSpec:
 				if !t.Name.IsExported() {
 					return false
@@ -123,6 +199,7 @@ func getInterfaceData(
 					return false
 				}
 				fmt.Println("typeSpec: ", t.Name.Name)
+				ifaceIdent = t.Name
 				switch ti := t.Type.(type) {
 				case *ast.InterfaceType:
 					iface = ti
@@ -135,12 +212,91 @@ func getInterfaceData(
 			return true
 		})
 
+		fmt.Println("processed imports: ")
+		for _, imp := range existingImports {
+			fmt.Println("import: ", imp.Path, "name:", imp.Name, "alias:", imp.Alias)
+		}
+
+		fmt.Println("new imports: ")
+		for _, imp := range newImports {
+			fmt.Println("import: ", imp.Path, "name:", imp.Name, "alias:", imp.Alias)
+		}
+		data.Imports = newImports
+
 		filename := fset.Position(f.Package).Filename
 		fmt.Println("filepath: ", filename)
 		content, _ := os.ReadFile(filename)
 		start := fset.Position(iface.Pos())
 		end := fset.Position(iface.End())
 		fmt.Println("interface: ", string(content[start.Offset:end.Offset]))
+
+		var realType func(t ast.Expr) *ast.Ident
+		realType = func(t ast.Expr) *ast.Ident {
+			switch t := t.(type) {
+			case *ast.Ident:
+				return t
+			case *ast.StarExpr:
+				return realType(t.X)
+			case *ast.SelectorExpr:
+				return realType(t.Sel)
+			case *ast.ArrayType:
+				return realType(t.Elt)
+			case *ast.MapType:
+				return realType(t.Value)
+			case *ast.ChanType:
+				return realType(t.Value)
+			default:
+				return nil
+			}
+		}
+
+		var correctedType func(t ast.Expr) string
+		correctedType = func(t ast.Expr) string {
+			switch t := t.(type) {
+			case *ast.Ident:
+				for _, defs := range defs {
+					if defs.Name() == t.Name {
+						for _, i := range newImports {
+							if i.Path == interfacePackage {
+								return i.Alias + "." + t.Name
+							}
+						}
+					}
+				}
+				return t.Name
+			case *ast.StarExpr:
+				return "*" + correctedType(t.X)
+			case *ast.SelectorExpr:
+				selectorStart := fset.Position(t.X.Pos())
+				selectorEnd := fset.Position(t.X.End())
+				selectorPkg := string(content[selectorStart.Offset:selectorEnd.Offset])
+				for _, i := range existingImports {
+					if i.Selector() == selectorPkg {
+						for _, imp := range newImports {
+							if imp.Path == i.Path {
+								return imp.Alias + "." + t.Sel.Name
+							}
+						}
+					}
+				}
+				return selectorPkg + "." + realType(t.Sel).Name
+			case *ast.ArrayType:
+				return "[]" + correctedType(t.Elt)
+			case *ast.MapType:
+				return "map[" + correctedType(t.Key) + "]" + correctedType(t.Value)
+			case *ast.ChanType:
+				// channel with correct arrow position
+				if t.Arrow == token.NoPos {
+					return "chan " + correctedType(t.Value)
+				} else if t.Arrow == token.Pos(start.Offset) {
+					return "<-chan " + correctedType(t.Value)
+				} else {
+					return "chan<- " + correctedType(t.Value)
+				}
+			default:
+				return ""
+			}
+		}
 
 		for _, m := range iface.Methods.List {
 			start = fset.Position(m.Pos())
@@ -156,54 +312,24 @@ func getInterfaceData(
 			}
 			fmt.Println("methodData: ", methodData)
 
-			var realType func(t ast.Expr) *ast.Ident
-			realType = func(t ast.Expr) *ast.Ident {
-				switch t := t.(type) {
-				case *ast.Ident:
-					return t
-				case *ast.StarExpr:
-					return realType(t.X)
-				case *ast.SelectorExpr:
-					return realType(t.Sel)
-				case *ast.ArrayType:
-					return realType(t.Elt)
-				case *ast.MapType:
-					return realType(t.Value)
-				case *ast.ChanType:
-					return realType(t.Value)
-				default:
-					return nil
-				}
-			}
-
 			if m.Type != nil {
 				switch t := m.Type.(type) {
 				case *ast.FuncType:
 					if t.Params != nil {
 						for _, param := range t.Params.List {
-							start = fset.Position(param.Type.Pos())
-							end = fset.Position(param.Type.End())
 							methodData.Params = append(
 								methodData.Params,
-								string(content[start.Offset:end.Offset]),
+								correctedType(param.Type),
 							)
-							rt := realType(param.Type)
-							fmt.Println("param: ", param.Names, "- ", reflect.TypeOf(param.Type), string(content[start.Offset:end.Offset]), " - realtype: ", rt)
-							if rt.IsExported() {
-								fmt.Println("exported: ", rt.Name)
-							}
 						}
 					}
 
 					if t.Results != nil {
 						for _, result := range t.Results.List {
-							start = fset.Position(result.Pos())
-							end = fset.Position(result.End())
 							methodData.Rets = append(
 								methodData.Rets,
-								string(content[start.Offset:end.Offset]),
+								correctedType(result.Type),
 							)
-							fmt.Println("result: ", result.Names, "- ", reflect.TypeOf(result.Type), string(content[start.Offset:end.Offset]), " - realtype: ", realType(result.Type))
 						}
 					}
 				}
@@ -211,6 +337,7 @@ func getInterfaceData(
 
 			data.Methods = append(data.Methods, methodData)
 		}
+		data.ImplementationType = correctedType(ifaceIdent)
 	}
 
 	return data, nil
@@ -222,17 +349,19 @@ package {{ .PackageName }}
 import (
     proxygenInterceptors "github.com/panagiotisptr/proxygen/interceptor"
 
-    {{range $idx, $import := .Imports}}
-    {{ import{{$idx}} $import }}
+    {{range $import := .Imports}}
+    {{ $import.Alias }} "{{ $import.Path }}"
     {{- end }}
 )
 
 type {{ .Name }} struct {
-	Implementation iservice.TaskService
+	Implementation {{ .ImplementationType }}
 	Interceptors   proxygenInterceptors.InterceptorChain
 }
 
-{{ range $method := .Methods }}
+var _ {{ .ImplementationType }} = (*{{ .Name }})(nil)
+
+{{- range $method := .Methods }}
 
 func (this *{{ $.Name }}) {{ $method.Name }}(
 {{- if gt (len $method.Params) 0 -}}
@@ -245,7 +374,11 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
    {{ $ret }},
 {{- end}}
 ) {{end}}{
+    {{if ne (len $method.Rets) 0 -}}
     rets := this.Interceptors.Apply(
+    {{- else -}}
+    this.Interceptors.Apply(
+    {{- end}}
         []interface{}{
         {{- if gt (len $method.Params) 0 -}}
         {{range $idx, $param := $method.Params }}
@@ -266,7 +399,7 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
             {{- end}} := this.Implementation.{{ $method.Name }}(
                 {{- if gt (len $method.Params) 0 -}}
                 {{range $idx, $param := $method.Params }}
-                   arg{{ $idx }}.({{ $param }}),
+                   args[{{ $idx }}].({{ $param }}),
                 {{- end}}
                 {{end -}}
             )
@@ -274,7 +407,7 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
             this.Implementation.{{ $method.Name }}(
                 {{- if gt (len $method.Params) 0 -}}
                 {{range $idx, $param := $method.Params }}
-                   arg{{ $idx }}.({{ $param }}),
+                   args[{{ $idx }}].({{ $param }}),
                 {{- end}}
                 {{end -}}
             )
