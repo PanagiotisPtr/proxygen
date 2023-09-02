@@ -19,6 +19,7 @@ type ImportData struct {
 	Path  string
 	Name  string
 	Alias string
+	Used  bool
 }
 
 func (id ImportData) Selector() string {
@@ -128,7 +129,6 @@ func getInterfaceData(
 	defs := make(map[string]types.Object)
 	existingImports := []ImportData{}
 	newImports := []ImportData{}
-	fmt.Println("hello")
 	var pkg *packages.Package
 	for _, p := range pkgs {
 		if p.PkgPath == interfacePackage {
@@ -176,11 +176,39 @@ func getInterfaceData(
 
 	for _, fileAst := range pkg.Syntax {
 		f = fileAst
+		foundIface := false
+		ast.Inspect(fileAst, func(n ast.Node) bool {
+			switch t := n.(type) {
+			case *ast.TypeSpec:
+				if !t.Name.IsExported() {
+					return false
+				}
+				if t.Name.Name != interfaceName {
+					return false
+				}
+				ifaceIdent = t.Name
+				switch ti := t.Type.(type) {
+				case *ast.InterfaceType:
+					iface = ti
+					foundIface = true
+					return false
+				default:
+					return false
+				}
+			}
+
+			return true
+		})
+		if !foundIface {
+			continue
+		}
+		fmt.Println("file: ", fileAst.Name)
 		ast.Inspect(fileAst, func(n ast.Node) bool {
 			switch t := n.(type) {
 			case *ast.ImportSpec:
 				// check if it's import
 				path := strings.ReplaceAll(t.Path.Value, "\"", "")
+				fmt.Println("importAst: ", t)
 				fmt.Println("import: ", path, "as", t.Name)
 				if t.Name != nil {
 					for i, imp := range existingImports {
@@ -191,22 +219,6 @@ func getInterfaceData(
 					}
 				}
 				return false
-			case *ast.TypeSpec:
-				if !t.Name.IsExported() {
-					return false
-				}
-				if t.Name.Name != interfaceName {
-					return false
-				}
-				fmt.Println("typeSpec: ", t.Name.Name)
-				ifaceIdent = t.Name
-				switch ti := t.Type.(type) {
-				case *ast.InterfaceType:
-					iface = ti
-					return false
-				default:
-					return false
-				}
 			}
 
 			return true
@@ -256,9 +268,10 @@ func getInterfaceData(
 			case *ast.Ident:
 				for _, defs := range defs {
 					if defs.Name() == t.Name {
-						for _, i := range newImports {
-							if i.Path == interfacePackage {
-								return i.Alias + "." + t.Name
+						for i := range newImports {
+							if newImports[i].Path == interfacePackage {
+								newImports[i].Used = true
+								return newImports[i].Alias + "." + t.Name
 							}
 						}
 					}
@@ -272,9 +285,10 @@ func getInterfaceData(
 				selectorPkg := string(content[selectorStart.Offset:selectorEnd.Offset])
 				for _, i := range existingImports {
 					if i.Selector() == selectorPkg {
-						for _, imp := range newImports {
-							if imp.Path == i.Path {
-								return imp.Alias + "." + t.Sel.Name
+						for idx := range newImports {
+							if newImports[idx].Path == i.Path {
+								newImports[idx].Used = true
+								return newImports[idx].Alias + "." + t.Sel.Name
 							}
 						}
 					}
@@ -350,7 +364,7 @@ import (
     proxygenInterceptors "github.com/panagiotisptr/proxygen/interceptor"
 
     {{range $import := .Imports}}
-    {{ $import.Alias }} "{{ $import.Path }}"
+    {{ if $import.Used }} {{ $import.Alias }} "{{ $import.Path }}" {{ end }}
     {{- end }}
 )
 
