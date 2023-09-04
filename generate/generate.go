@@ -37,11 +37,12 @@ type MethodData struct {
 }
 
 type InterfaceData struct {
-	InterfacePackage   string
-	InterfaceName      string
-	Imports            []ImportData
-	Methods            []MethodData
-	ImplementationType string
+	InterfacePackage    string
+	InterfaceName       string
+	Imports             []ImportData
+	Methods             []MethodData
+	ImplementationType  string
+	OriginalPackageName string
 }
 
 const mode packages.LoadMode = packages.NeedName |
@@ -66,10 +67,20 @@ func LoadPackage(
 	var fset = token.NewFileSet()
 	cfg := &packages.Config{Fset: fset, Mode: mode, Dir: "."}
 
-	data, err := getInterfaceData(fset, cfg, packagePath, interfaceName, []ImportData{})
+	data, err := getInterfaceData(fset, cfg, packagePath, interfaceName)
 	if err != nil {
 		fmt.Println("err: ", err)
 		os.Exit(1)
+	}
+
+	// fix the imports for the main package
+	if data.OriginalPackageName != packageName {
+		for i := range data.Imports {
+			if data.Imports[i].Path == packagePath {
+				data.Imports[i].Used = true
+				break
+			}
+		}
 	}
 
 	//render template
@@ -114,12 +125,11 @@ func getInterfaceData(
 	cfg *packages.Config,
 	interfacePackage string,
 	interfaceName string,
-	imports []ImportData,
 ) (InterfaceData, error) {
 	data := InterfaceData{
 		InterfacePackage: interfacePackage,
 		InterfaceName:    interfaceName,
-		Imports:          imports,
+		Imports:          []ImportData{},
 	}
 	pkgs, err := packages.Load(cfg, interfacePackage)
 	if err != nil {
@@ -166,8 +176,10 @@ func getInterfaceData(
 			}
 		}
 	}
+
+	data.OriginalPackageName = pkg.Name
 	for i := range newImports {
-		newImports[i].Alias = fmt.Sprintf("import%d", i)
+		newImports[i].Alias = fmt.Sprintf("import%s%s%d", pkg.Name, interfaceName, i)
 	}
 
 	var iface *ast.InterfaceType
@@ -240,7 +252,6 @@ func getInterfaceData(
 		content, _ := os.ReadFile(filename)
 		start := fset.Position(iface.Pos())
 		end := fset.Position(iface.End())
-		fmt.Println("interface: ", string(content[start.Offset:end.Offset]))
 
 		var realType func(t ast.Expr) *ast.Ident
 		realType = func(t ast.Expr) *ast.Ident {
@@ -270,7 +281,6 @@ func getInterfaceData(
 					if defs.Name() == t.Name {
 						for i := range newImports {
 							if newImports[i].Path == interfacePackage {
-								newImports[i].Used = true
 								return newImports[i].Alias + "." + t.Name
 							}
 						}
@@ -302,13 +312,15 @@ func getInterfaceData(
 				// channel with correct arrow position
 				if t.Arrow == token.NoPos {
 					return "chan " + correctedType(t.Value)
-				} else if t.Arrow == token.Pos(start.Offset) {
+				} else if t.Dir == ast.RECV {
 					return "<-chan " + correctedType(t.Value)
 				} else {
 					return "chan<- " + correctedType(t.Value)
 				}
 			default:
-				return ""
+				tokenStart := fset.Position(t.Pos())
+				tokenEnd := fset.Position(t.End())
+				return string(content[tokenStart.Offset:tokenEnd.Offset])
 			}
 		}
 
@@ -352,6 +364,60 @@ func getInterfaceData(
 			data.Methods = append(data.Methods, methodData)
 		}
 		data.ImplementationType = correctedType(ifaceIdent)
+
+		queue := [][2]string{}
+		fmt.Println("processing interface")
+		ast.Inspect(iface, func(n ast.Node) bool {
+			switch t := n.(type) {
+			case *ast.Field:
+				fmt.Println("field: ", t.Names, t.Type)
+				// we know that all embedded interfaces don't have names
+				if len(t.Names) == 0 {
+					return true
+				}
+				return false
+			case *ast.Ident:
+				fmt.Println("package: ", interfacePackage)
+				fmt.Println("interface: ", t.Name)
+				queue = append(queue, [2]string{interfacePackage, t.Name})
+				return false
+			case *ast.SelectorExpr:
+				selectorStart := fset.Position(t.X.Pos())
+				selectorEnd := fset.Position(t.X.End())
+				selectorPkg := string(content[selectorStart.Offset:selectorEnd.Offset])
+				for _, i := range existingImports {
+					if i.Selector() == selectorPkg {
+						for idx := range newImports {
+							if newImports[idx].Path == i.Path {
+								fmt.Println("package: ", newImports[idx].Path)
+								fmt.Println("interface: ", t.Sel.Name)
+								queue = append(queue, [2]string{newImports[idx].Path, t.Sel.Name})
+								return false
+							}
+						}
+					}
+				}
+				return false
+			}
+
+			return true
+		})
+
+		for _, embeddedIface := range queue {
+			embeddedData, embeddedErr := getInterfaceData(
+				fset,
+				cfg,
+				embeddedIface[0],
+				embeddedIface[1],
+			)
+			if embeddedErr != nil {
+				fmt.Println("embeddedErr: ", embeddedErr)
+				continue
+			}
+
+			data.Imports = append(data.Imports, embeddedData.Imports...)
+			data.Methods = append(data.Methods, embeddedData.Methods...)
+		}
 	}
 
 	return data, nil
