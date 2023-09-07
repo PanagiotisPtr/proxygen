@@ -4,6 +4,12 @@ Proxygen allows you to generate proxies for Go interfaces. These are useful if y
 Even in big codebases this tool should be fairly fast (0-1sec per file) as it only parses the files top-down and doesn't look at nested dependencies unless it has to. The parsing is done using the `golang.org/x/tools/go/packages` package.
 You will also notice that this tool does not use the `reflect` package so it fast at runtime as well.
 
+## Installation
+Install the `proxygen` tool
+```console
+go install github.com/panagiotisptr/proxygen/cmd/proxygen@latest
+```
+
 ## Quickstart
 
 Say that you have an interface that looks like this:
