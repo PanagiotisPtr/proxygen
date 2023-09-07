@@ -15,7 +15,9 @@ func main() {
 
 	flag.Parse()
 
-	generate.LoadPackage(
+	generator := generate.NewGenerator()
+
+	generator.GenerateProxy(
 		*interfacePath,
 		*packageName,
 		*name,
