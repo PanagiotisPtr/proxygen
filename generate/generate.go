@@ -74,16 +74,16 @@ func (g *Generator) GenerateProxy(
 	packagePath := strings.Join(sections[:len(sections)-1], ".")
 	interfaceName := sections[len(sections)-1]
 
-	data, err := g.getInterfaceData(packagePath, interfaceName)
+	data, err := g.getInterfaceData(packagePath, interfaceName, packageName)
 	if err != nil {
 		return err
 	}
 
 	// fix the imports for the main package
 	if data.OriginalPackageName != packageName {
-		for i := range data.Imports {
-			if data.Imports[i].Path == packagePath {
-				data.Imports[i].Used = true
+		for _, m := range data.Imports {
+			if m.Path == packagePath {
+				m.Used = true
 				break
 			}
 		}
@@ -128,6 +128,7 @@ func (g *Generator) GenerateProxy(
 func (g *Generator) getInterfaceData(
 	interfacePackage string,
 	interfaceName string,
+	outputPkgName string,
 ) (InterfaceData, error) {
 	data := InterfaceData{
 		InterfacePackage: interfacePackage,
@@ -159,7 +160,6 @@ func (g *Generator) getInterfaceData(
 	}
 
 	// useful later to determine wether or not this package was used
-	data.OriginalPackageName = pkg.Name
 	for i := range newImports {
 		// alias all new imports so that they won't conflict with anything we might add
 		// later - which could be from merging embedded interface imports
@@ -204,6 +204,7 @@ func (g *Generator) getInterfaceData(
 			return data, err
 		}
 
+		addSelectorToLocals := pkg.Name != outputPkgName
 		for _, m := range iface.Methods.List {
 			if m.Names == nil {
 				continue
@@ -225,6 +226,7 @@ func (g *Generator) getInterfaceData(
 									existingImports,
 									newImports,
 									interfacePackage,
+									addSelectorToLocals,
 								),
 							)
 						}
@@ -239,6 +241,7 @@ func (g *Generator) getInterfaceData(
 									existingImports,
 									newImports,
 									interfacePackage,
+									addSelectorToLocals,
 								),
 							)
 						}
@@ -253,7 +256,11 @@ func (g *Generator) getInterfaceData(
 			existingImports,
 			newImports,
 			interfacePackage,
+			addSelectorToLocals,
 		)
+
+		// used later to make sure it's imported if needed
+		data.OriginalPackageName = pkg.Name
 
 		queue := [][2]string{}
 		ast.Inspect(iface, func(n ast.Node) bool {
@@ -291,6 +298,7 @@ func (g *Generator) getInterfaceData(
 			embeddedData, embeddedErr := g.getInterfaceData(
 				embeddedIface[0],
 				embeddedIface[1],
+				outputPkgName,
 			)
 			if embeddedErr != nil {
 				continue

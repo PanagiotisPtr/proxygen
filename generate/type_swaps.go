@@ -73,18 +73,21 @@ func (tp *TypeProcessor) correctType(
 	existingImports []*ImportData,
 	newImports []*ImportData,
 	pkgPath string,
+	addSelectorToLocalDefs bool,
 ) string {
 	correctTypeProxy := func(t ast.Expr) string {
-		return tp.correctType(t, existingImports, newImports, pkgPath)
+		return tp.correctType(t, existingImports, newImports, pkgPath, addSelectorToLocalDefs)
 	}
 
 	switch t := t.(type) {
 	case *ast.Ident:
-		for _, defs := range tp.defs {
-			if defs.Name() == t.Name {
-				for i := range newImports {
-					if newImports[i].Path == pkgPath {
-						return newImports[i].Alias + "." + t.Name
+		if addSelectorToLocalDefs {
+			for _, defs := range tp.defs {
+				if defs.Name() == t.Name {
+					for i := range newImports {
+						if newImports[i].Path == pkgPath {
+							return newImports[i].Alias + "." + t.Name
+						}
 					}
 				}
 			}
