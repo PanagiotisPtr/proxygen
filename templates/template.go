@@ -5,6 +5,7 @@ package {{ .PackageName }}
 
 import (
     proxygenInterceptors "github.com/panagiotisptr/proxygen/interceptor"
+    proxygenCaster "github.com/panagiotisptr/proxygen/caster"
 
     {{range $import := .Imports}}
     {{ if $import.Used }} {{ $import.Alias }} "{{ $import.Path }}" {{ end }}
@@ -87,7 +88,7 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
         ,
         rets[{{ $idx }}].({{ $ret }})
         {{- else -}}
-        rets[{{ $idx }}].({{ $ret }})
+        caster.Cast[{{ $ret }}](rets[{{ $idx }}])
         {{- end -}} 
     {{end}}
     {{- end}}
