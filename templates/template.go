@@ -88,7 +88,7 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
         ,
         rets[{{ $idx }}].({{ $ret }})
         {{- else -}}
-        caster.Cast[{{ $ret }}](rets[{{ $idx }}])
+        proxygenCaster.Cast[{{ $ret }}](rets[{{ $idx }}])
         {{- end -}} 
     {{end}}
     {{- end}}
