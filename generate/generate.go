@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"os"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -148,7 +149,16 @@ func (g *Generator) getInterfaceData(
 		Path: interfacePackage,
 		Name: pkg.Name,
 	})
-	for _, imp := range pkg.Imports {
+	keys := make([]string, len(pkg.Imports))
+	i := 0
+	for k := range pkg.Imports {
+		keys[i] = k
+		i++
+	}
+	// sort imports to ensure that generated code is deterministic
+	sort.Strings(keys)
+	for i := range keys {
+		imp := pkg.Imports[keys[i]]
 		existingImports = append(existingImports, &ImportData{
 			Path: imp.PkgPath,
 			Name: imp.Name,
