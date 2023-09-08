@@ -86,7 +86,7 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
     return {{range $idx, $ret := $method.Rets -}}
         {{- if ne $idx 0 -}}
         ,
-        rets[{{ $idx }}].({{ $ret }})
+        proxygenCaster.Cast[{{ $ret }}](rets[{{ $idx }}])
         {{- else -}}
         proxygenCaster.Cast[{{ $ret }}](rets[{{ $idx }}])
         {{- end -}} 
