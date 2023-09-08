@@ -229,31 +229,35 @@ func (g *Generator) getInterfaceData(
 				case *ast.FuncType:
 					if t.Params != nil {
 						for _, param := range t.Params.List {
-							methodData.Params = append(
-								methodData.Params,
-								tp.correctType(
-									param.Type,
-									existingImports,
-									newImports,
-									interfacePackage,
-									addSelectorToLocals,
-								),
-							)
+							for i := 0; i < max(1, len(param.Names)); i++ {
+								methodData.Params = append(
+									methodData.Params,
+									tp.correctType(
+										param.Type,
+										existingImports,
+										newImports,
+										interfacePackage,
+										addSelectorToLocals,
+									),
+								)
+							}
 						}
 					}
 
 					if t.Results != nil {
 						for _, result := range t.Results.List {
-							methodData.Rets = append(
-								methodData.Rets,
-								tp.correctType(
-									result.Type,
-									existingImports,
-									newImports,
-									interfacePackage,
-									addSelectorToLocals,
-								),
-							)
+							for i := 0; i < max(1, len(result.Names)); i++ {
+								methodData.Rets = append(
+									methodData.Rets,
+									tp.correctType(
+										result.Type,
+										existingImports,
+										newImports,
+										interfacePackage,
+										addSelectorToLocals,
+									),
+								)
+							}
 						}
 					}
 				}
