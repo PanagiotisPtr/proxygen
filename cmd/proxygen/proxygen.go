@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"os"
 
 	"github.com/panagiotisptr/proxygen/generate"
 )
@@ -17,10 +19,15 @@ func main() {
 
 	generator := generate.NewGenerator()
 
-	generator.GenerateProxy(
+	err := generator.GenerateProxy(
 		*interfacePath,
 		*packageName,
 		*name,
 		*output,
 	)
+	if err != nil {
+		fmt.Println("encountered error while generating proxy:", err)
+		os.Exit(1)
+	}
+	fmt.Println("proxy generated successfully")
 }
