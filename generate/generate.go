@@ -30,9 +30,23 @@ func (id ImportData) Selector() string {
 	return id.Name
 }
 
+type MethodParam string
+
+func (m MethodParam) IsVariadic() bool {
+	return strings.HasPrefix(string(m), "...")
+}
+
+func (m MethodParam) Type() string {
+	if m.IsVariadic() {
+		return "[]" + strings.TrimPrefix(string(m), "...")
+	}
+
+	return string(m)
+}
+
 type MethodData struct {
 	Name   string
-	Params []string
+	Params []MethodParam
 	Rets   []string
 }
 
@@ -232,13 +246,13 @@ func (g *Generator) getInterfaceData(
 							for i := 0; i < max(1, len(param.Names)); i++ {
 								methodData.Params = append(
 									methodData.Params,
-									tp.correctType(
+									MethodParam(tp.correctType(
 										param.Type,
 										existingImports,
 										newImports,
 										interfacePackage,
 										addSelectorToLocals,
-									),
+									)),
 								)
 							}
 						}

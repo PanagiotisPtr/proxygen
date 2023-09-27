@@ -57,7 +57,11 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
             {{- end}} := this.Implementation.{{ $method.Name }}(
                 {{- if gt (len $method.Params) 0 -}}
                 {{range $idx, $param := $method.Params }}
-                   args[{{ $idx }}].({{ $param }}),
+                   {{- if $param.IsVariadic -}}
+                   args[{{ $idx }}].({{ $param.Type }})...,
+                   {{- else -}}
+                   args[{{ $idx }}].({{ $param.Type }}),
+                   {{- end }}
                 {{- end}}
                 {{end -}}
             )
@@ -65,7 +69,11 @@ func (this *{{ $.Name }}) {{ $method.Name }}(
             this.Implementation.{{ $method.Name }}(
                 {{- if gt (len $method.Params) 0 -}}
                 {{range $idx, $param := $method.Params }}
-                   args[{{ $idx }}].({{ $param }}),
+                   {{- if $param.IsVariadic -}}
+                   args[{{ $idx }}].({{ $param.Type }})...,
+                   {{- else -}}
+                   args[{{ $idx }}].({{ $param.Type }}),
+                   {{- end }}
                 {{- end}}
                 {{end -}}
             )
