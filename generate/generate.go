@@ -16,10 +16,12 @@ import (
 )
 
 type ImportData struct {
-	Path  string
-	Name  string
-	Alias string
-	Used  bool
+	Path          string
+	Name          string
+	Alias         string
+	PkgName       string
+	InterfaceName string
+	Used          bool
 }
 
 func (id ImportData) Selector() string {
@@ -104,7 +106,30 @@ func (g *Generator) GenerateProxy(
 		}
 	}
 
-	//render template
+	usedImports := []*ImportData{}
+	for _, imp := range data.Imports {
+		if !imp.Used {
+			continue
+		}
+		usedImports = append(usedImports, imp)
+	}
+	data.Imports = usedImports
+
+	// ensure deterministic output PER file
+	for i, imp := range usedImports {
+		newAlias := fmt.Sprintf("import%s%s%d", imp.PkgName, imp.InterfaceName, i)
+		for _, meth := range data.Methods {
+			for parami := range meth.Params {
+				meth.Params[parami] = MethodParam(strings.ReplaceAll(string(meth.Params[parami]), imp.Alias, newAlias))
+			}
+			for reti := range meth.Rets {
+				meth.Rets[reti] = strings.ReplaceAll(meth.Rets[reti], imp.Alias, newAlias)
+			}
+		}
+		imp.Alias = newAlias
+	}
+
+	// render template
 	tmpl := template.Must(template.New("proxy").Parse(templates.ProxyTemplate))
 	var generatedProxy bytes.Buffer
 	err = tmpl.Execute(&generatedProxy, struct {
@@ -188,6 +213,8 @@ func (g *Generator) getInterfaceData(
 		// alias all new imports so that they won't conflict with anything we might add
 		// later - which could be from merging embedded interface imports
 		newImports[i].Alias = fmt.Sprintf("import%s%s%d", pkg.Name, interfaceName, i)
+		newImports[i].PkgName = pkg.Name
+		newImports[i].InterfaceName = interfaceName
 	}
 
 	var interfaceFile *ast.File
